@@ -14,7 +14,7 @@ const RIGHT_MAX = 450
 const RIGHT_DEFAULT = 320
 
 function App(): React.JSX.Element {
-  const { currentThreadId, loadThreads, createThread, setSettingsOpen } = useAppStore()
+  const { currentThreadId, loadThreads, createThread } = useAppStore()
   const [isLoading, setIsLoading] = useState(true)
   const [leftWidth, setLeftWidth] = useState(LEFT_DEFAULT)
   const [rightWidth, setRightWidth] = useState(RIGHT_DEFAULT)
@@ -46,23 +46,6 @@ function App(): React.JSX.Element {
     document.addEventListener('mouseup', handleMouseUp)
     return () => document.removeEventListener('mouseup', handleMouseUp)
   }, [])
-
-  // Keyboard shortcuts
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent) => {
-      // Cmd+, for settings
-      if ((e.metaKey || e.ctrlKey) && e.key === ',') {
-        e.preventDefault()
-        setSettingsOpen(true)
-      }
-    },
-    [setSettingsOpen]
-  )
-
-  useEffect(() => {
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [handleKeyDown])
 
   useEffect(() => {
     async function init(): Promise<void> {

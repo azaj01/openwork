@@ -1,11 +1,9 @@
 import { useState } from 'react'
-import { Plus, MessageSquare, Trash2, Settings, Pencil } from 'lucide-react'
+import { Plus, MessageSquare, Trash2, Pencil } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Separator } from '@/components/ui/separator'
 import { useAppStore } from '@/lib/store'
 import { cn, formatRelativeTime, truncate } from '@/lib/utils'
-import { SettingsDialog } from '@/components/settings/SettingsDialog'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -14,9 +12,6 @@ import {
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
 
-// Get version from package.json (injected at build time or via preload)
-const APP_VERSION = '0.1.0'
-
 export function ThreadSidebar(): React.JSX.Element {
   const {
     threads,
@@ -24,9 +19,7 @@ export function ThreadSidebar(): React.JSX.Element {
     createThread,
     selectThread,
     deleteThread,
-    updateThread,
-    settingsOpen,
-    setSettingsOpen
+    updateThread
   } = useAppStore()
 
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null)
@@ -55,15 +48,12 @@ export function ThreadSidebar(): React.JSX.Element {
   }
 
   return (
-    <aside className="flex h-full w-[240px] flex-col border-r border-border bg-sidebar overflow-hidden">
-      {/* Header */}
-      <div className="flex items-center justify-between p-4">
-        <div className="flex items-center gap-1.5">
-          <span className="text-section-header tracking-wider">OPENWORK</span>
-          <span className="text-[10px] text-muted-foreground font-mono">{APP_VERSION}</span>
-        </div>
-        <Button variant="ghost" size="icon-sm" onClick={handleNewThread} title="New thread">
+    <aside className="flex h-full w-full flex-col border-r border-border bg-sidebar overflow-hidden">
+      {/* New Thread Button */}
+      <div className="p-2">
+        <Button variant="ghost" size="sm" className="w-full justify-start gap-2" onClick={handleNewThread}>
           <Plus className="size-4" />
+          New Thread
         </Button>
       </div>
 
@@ -150,24 +140,6 @@ export function ThreadSidebar(): React.JSX.Element {
           )}
         </div>
       </ScrollArea>
-
-      <Separator />
-
-      {/* Settings */}
-      <div className="p-4">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="w-full justify-start gap-2"
-          onClick={() => setSettingsOpen(true)}
-        >
-          <Settings className="size-4" />
-          Settings
-        </Button>
-      </div>
-
-      {/* Settings Dialog */}
-      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
     </aside>
   )
 }
