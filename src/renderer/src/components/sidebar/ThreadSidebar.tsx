@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Plus, MessageSquare, Trash2, Pencil } from 'lucide-react'
+import { Plus, MessageSquare, Trash2, Pencil, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useAppStore } from '@/lib/store'
@@ -16,6 +16,7 @@ export function ThreadSidebar(): React.JSX.Element {
   const {
     threads,
     currentThreadId,
+    loadingThreadId,
     createThread,
     selectThread,
     deleteThread,
@@ -76,7 +77,11 @@ export function ThreadSidebar(): React.JSX.Element {
                     }
                   }}
                 >
-                  <MessageSquare className="size-4 shrink-0 text-muted-foreground" />
+                  {loadingThreadId === thread.thread_id ? (
+                    <Loader2 className="size-4 shrink-0 text-status-info animate-spin" />
+                  ) : (
+                    <MessageSquare className="size-4 shrink-0 text-muted-foreground" />
+                  )}
                   <div className="flex-1 min-w-0 overflow-hidden">
                     {editingThreadId === thread.thread_id ? (
                       <input

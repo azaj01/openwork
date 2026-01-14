@@ -7,7 +7,7 @@ import { useAppStore } from '@/lib/store'
 import type { FileInfo } from '@/types'
 
 export function FilesystemPanel() {
-  const { workspaceFiles, workspacePath, currentThreadId, setWorkspacePath } = useAppStore()
+  const { workspaceFiles, workspacePath, currentThreadId, setWorkspacePath, setWorkspaceFiles } = useAppStore()
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set())
   const [syncing, setSyncing] = useState(false)
   const [syncSuccess, setSyncSuccess] = useState(false)
@@ -29,6 +29,26 @@ export function FilesystemPanel() {
       setExpandedDirs(new Set([workspacePath]))
     }
   }, [workspacePath])
+  
+  // Listen for file changes from the main process
+  useEffect(() => {
+    const cleanup = window.api.workspace.onFilesChanged(async (data) => {
+      // Only refresh if this is the current thread
+      if (data.threadId === currentThreadId) {
+        console.log('[FilesystemPanel] Files changed, refreshing...')
+        try {
+          const result = await window.api.workspace.loadFromDisk(data.threadId)
+          if (result.success) {
+            setWorkspaceFiles(result.files)
+          }
+        } catch (e) {
+          console.error('[FilesystemPanel] Error refreshing files:', e)
+        }
+      }
+    })
+    
+    return cleanup
+  }, [currentThreadId, setWorkspaceFiles])
   
   // Handle selecting a workspace folder
   async function handleSelectFolder() {

@@ -363,17 +363,21 @@ export class ElectronIPCTransport implements UseStreamTransport {
 
       if (isAIMessage) {
         const content = this.extractContent(kwargs.content)
+        const msgId = kwargs.id || this.currentMessageId || crypto.randomUUID()
+        this.currentMessageId = msgId
 
-        if (content) {
-          // Track message ID for grouping tokens
-          const msgId = kwargs.id || this.currentMessageId || crypto.randomUUID()
-          this.currentMessageId = msgId
-
-          console.log('[Transport] Processing token:', content.substring(0, 50))
+        if (content || kwargs.tool_calls?.length) {
+          console.log('[Transport] Processing AI message:', content?.substring(0, 50) || '(tool calls)')
           events.push({
             event: 'messages',
             data: [
-              { id: msgId, type: 'ai', content },
+              { 
+                id: msgId, 
+                type: 'ai', 
+                content: content || '',
+                // Include tool_calls if present
+                ...(kwargs.tool_calls?.length && { tool_calls: kwargs.tool_calls })
+              },
               { langgraph_node: metadata?.langgraph_node || 'agent' }
             ]
           })
@@ -401,11 +405,32 @@ export class ElectronIPCTransport implements UseStreamTransport {
         }
       }
 
-      // Handle ToolMessage - signals subagent completion
-      if (isToolMessage && kwargs.tool_call_id && kwargs.name === 'task') {
-        console.log('[Transport] ToolMessage detected for:', kwargs.tool_call_id)
-        const completionEvents = this.processToolMessage(kwargs.tool_call_id)
-        events.push(...completionEvents)
+      // Handle ToolMessage - emit as message event and handle subagent completion
+      if (isToolMessage && kwargs.tool_call_id) {
+        const content = this.extractContent(kwargs.content)
+        const msgId = kwargs.id || crypto.randomUUID()
+        
+        // Emit tool message to the stream
+        events.push({
+          event: 'messages',
+          data: [
+            { 
+              id: msgId, 
+              type: 'tool', 
+              content,
+              tool_call_id: kwargs.tool_call_id,
+              name: kwargs.name
+            },
+            { langgraph_node: metadata?.langgraph_node || 'tools' }
+          ]
+        })
+        
+        // Handle subagent task completion
+        if (kwargs.name === 'task') {
+          console.log('[Transport] ToolMessage detected for:', kwargs.tool_call_id)
+          const completionEvents = this.processToolMessage(kwargs.tool_call_id)
+          events.push(...completionEvents)
+        }
       }
     } else if (mode === 'values') {
       console.log('[Transport] Values mode - processing state')
@@ -490,7 +515,12 @@ export class ElectronIPCTransport implements UseStreamTransport {
           return {
             id: kwargs.id || crypto.randomUUID(),
             type,
-            content
+            content,
+            // Include tool_calls for AI messages
+            ...(type === 'ai' && kwargs.tool_calls && { tool_calls: kwargs.tool_calls }),
+            // Include tool_call_id and name for tool messages
+            ...(type === 'tool' && kwargs.tool_call_id && { tool_call_id: kwargs.tool_call_id }),
+            ...(type === 'tool' && kwargs.name && { name: kwargs.name })
           }
         })
 

@@ -4,6 +4,7 @@ import * as fs from 'fs/promises'
 import * as path from 'path'
 import type { ModelConfig, Provider, ProviderId } from '../types'
 import { getCheckpointer } from '../agent/runtime'
+import { startWatching, stopWatching } from '../services/workspace-watcher'
 
 // Encrypted store for API keys
 const store = new Store({
@@ -251,6 +252,14 @@ export function registerModelHandlers(ipcMain: IpcMain): void {
 
       metadata.workspacePath = newPath
       updateThread(threadId, { metadata: JSON.stringify(metadata) })
+
+      // Update file watcher
+      if (newPath) {
+        startWatching(threadId, newPath)
+      } else {
+        stopWatching(threadId)
+      }
+
       return newPath
     }
   )
@@ -284,6 +293,9 @@ export function registerModelHandlers(ipcMain: IpcMain): void {
 
         metadata.workspacePath = selectedPath
         updateThread(threadId, { metadata: JSON.stringify(metadata) })
+
+        // Start watching the new workspace
+        startWatching(threadId, selectedPath)
       }
     } else {
       // Fallback to global (no flush needed)
@@ -432,6 +444,9 @@ export function registerModelHandlers(ipcMain: IpcMain): void {
 
       await readDir(workspacePath)
 
+      // Start watching for file changes
+      startWatching(threadId, workspacePath)
+
       return {
         success: true,
         files,
@@ -458,6 +473,9 @@ export function registerModelHandlers(ipcMain: IpcMain): void {
         const config = { configurable: { thread_id: threadId } }
         const checkpoint = await checkpointer.getTuple(config)
 
+        console.log('[workspace:readFile] Looking for file:', filePath, 'in thread:', threadId)
+        console.log('[workspace:readFile] Checkpoint exists:', !!checkpoint)
+
         if (checkpoint?.checkpoint?.channel_values) {
           const state = checkpoint.checkpoint.channel_values as {
             files?: Record<
@@ -466,9 +484,15 @@ export function registerModelHandlers(ipcMain: IpcMain): void {
             >
           }
 
+          // Log available files in checkpoint
+          const availableFiles = state.files ? Object.keys(state.files) : []
+          console.log('[workspace:readFile] Available files in checkpoint:', availableFiles)
+
           // Normalize the path for lookup (try with and without leading slash)
           const normalizedPath = filePath.startsWith('/') ? filePath : '/' + filePath
           const altPath = filePath.startsWith('/') ? filePath.slice(1) : filePath
+
+          console.log('[workspace:readFile] Trying paths:', { normalizedPath, altPath, filePath })
 
           const fileData =
             state.files?.[normalizedPath] || state.files?.[altPath] || state.files?.[filePath]
@@ -479,13 +503,18 @@ export function registerModelHandlers(ipcMain: IpcMain): void {
               ? fileData.content.join('\n')
               : String(fileData.content)
 
+            console.log('[workspace:readFile] Found file, content length:', content.length)
             return {
               success: true,
               content,
               source: 'virtual',
               modified_at: fileData.modified_at
             }
+          } else {
+            console.log('[workspace:readFile] File not found in state.files')
           }
+        } else {
+          console.log('[workspace:readFile] No channel_values in checkpoint')
         }
       } catch (e) {
         console.warn('[workspace:readFile] Failed to read from virtual state:', e)

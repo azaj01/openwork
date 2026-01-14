@@ -73,6 +73,9 @@ interface CustomAPI {
       modified_at?: string
       error?: string
     }>
+    onFilesChanged: (
+      callback: (data: { threadId: string; workspacePath: string }) => void
+    ) => () => void
   }
 }
 

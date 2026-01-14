@@ -5,7 +5,8 @@ import { RightPanel } from '@/components/panels/RightPanel'
 import { ResizeHandle } from '@/components/ui/resizable'
 import { useAppStore } from '@/lib/store'
 
-const LEFT_MIN = 180
+// Badge requires ~235 screen pixels to display with comfortable margin
+const BADGE_MIN_SCREEN_WIDTH = 235
 const LEFT_MAX = 350
 const LEFT_DEFAULT = 240
 
@@ -49,15 +50,25 @@ function App(): React.JSX.Element {
     return () => window.removeEventListener('resize', updateZoom)
   }, [])
 
+  // Calculate zoom-compensated minimum width to always contain the badge
+  const leftMinWidth = Math.ceil(BADGE_MIN_SCREEN_WIDTH / zoomLevel)
+
+  // Enforce minimum width when zoom changes
+  useEffect(() => {
+    if (leftWidth < leftMinWidth) {
+      setLeftWidth(leftMinWidth)
+    }
+  }, [leftMinWidth, leftWidth])
+
   const handleLeftResize = useCallback(
     (totalDelta: number) => {
       if (!dragStartWidths.current) {
         dragStartWidths.current = { left: leftWidth, right: rightWidth }
       }
       const newWidth = dragStartWidths.current.left + totalDelta
-      setLeftWidth(Math.min(LEFT_MAX, Math.max(LEFT_MIN, newWidth)))
+      setLeftWidth(Math.min(LEFT_MAX, Math.max(leftMinWidth, newWidth)))
     },
-    [leftWidth, rightWidth]
+    [leftWidth, rightWidth, leftMinWidth]
   )
 
   const handleRightResize = useCallback(

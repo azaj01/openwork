@@ -28,7 +28,8 @@ export function TabbedPanel({ threadId, showTabBar = true }: TabbedPanelProps) {
         {isAgentTab ? (
           <ChatContainer threadId={threadId} />
         ) : activeFile ? (
-          <FileViewer filePath={activeFile.path} />
+          // Use key to force remount when file changes, ensuring fresh state
+          <FileViewer key={activeFile.path} filePath={activeFile.path} />
         ) : (
           // Fallback - shouldn't happen but just in case
           <div className="flex flex-1 items-center justify-center text-muted-foreground">

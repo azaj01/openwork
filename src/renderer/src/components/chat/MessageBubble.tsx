@@ -4,16 +4,22 @@ import type { Message } from '@/types'
 import { ToolCallRenderer } from './ToolCallRenderer'
 import { StreamingMarkdown } from './StreamingMarkdown'
 
+interface ToolResultInfo {
+  content: string | unknown
+  is_error?: boolean
+}
+
 interface MessageBubbleProps {
   message: Message
   isStreaming?: boolean
+  toolResults?: Map<string, ToolResultInfo>
 }
 
-export function MessageBubble({ message, isStreaming }: MessageBubbleProps) {
+export function MessageBubble({ message, isStreaming, toolResults }: MessageBubbleProps) {
   const isUser = message.role === 'user'
   const isTool = message.role === 'tool'
 
-  // Hide all tool result messages - they're shown inline with tool calls
+  // Hide tool result messages - they're shown inline with tool calls
   if (isTool) {
     return null
   }
@@ -113,9 +119,17 @@ export function MessageBubble({ message, isStreaming }: MessageBubbleProps) {
         {/* Tool calls */}
         {hasToolCalls && (
           <div className="space-y-2 overflow-hidden">
-            {message.tool_calls!.map((toolCall) => (
-              <ToolCallRenderer key={toolCall.id} toolCall={toolCall} />
-            ))}
+            {message.tool_calls!.map((toolCall) => {
+              const result = toolResults?.get(toolCall.id)
+              return (
+                <ToolCallRenderer 
+                  key={toolCall.id} 
+                  toolCall={toolCall}
+                  result={result?.content}
+                  isError={result?.is_error}
+                />
+              )
+            })}
           </div>
         )}
       </div>

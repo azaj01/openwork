@@ -185,6 +185,19 @@ const api = {
       error?: string
     }> => {
       return ipcRenderer.invoke('workspace:readFile', { threadId, filePath })
+    },
+    // Listen for file changes in the workspace
+    onFilesChanged: (
+      callback: (data: { threadId: string; workspacePath: string }) => void
+    ): (() => void) => {
+      const handler = (_: unknown, data: { threadId: string; workspacePath: string }): void => {
+        callback(data)
+      }
+      ipcRenderer.on('workspace:files-changed', handler)
+      // Return cleanup function
+      return () => {
+        ipcRenderer.removeListener('workspace:files-changed', handler)
+      }
     }
   }
 }

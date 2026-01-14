@@ -1,17 +1,22 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
-import { Send, Square, Loader2 } from 'lucide-react'
+import { Send, Square, Loader2, AlertCircle, X } from 'lucide-react'
 import { useStream } from '@langchain/langgraph-sdk/react'
-import type { InferAgentState } from 'langchain'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useAppStore } from '@/lib/store'
 import { MessageBubble } from './MessageBubble'
 import { ModelSwitcher } from './ModelSwitcher'
 import { WorkspacePicker } from './WorkspacePicker'
+import { ChatTodos } from './ChatTodos'
 import { ApprovalDialog } from '@/components/hitl/ApprovalDialog'
 import { ElectronIPCTransport } from '@/lib/electron-transport'
 import type { Message } from '@/types'
 import type { DeepAgent } from '../../../../main/agent/types'
+
+// Type for stream values with todos
+interface AgentStreamValues {
+  todos?: Array<{ id?: string; content?: string; status?: string }>
+}
 
 interface ChatContainerProps {
   threadId: string
@@ -39,6 +44,8 @@ interface MessageEventData {
   role?: string
   content?: string
   tool_calls?: unknown[]
+  tool_call_id?: string
+  name?: string
   created_at?: Date
 }
 
@@ -60,6 +67,8 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
   const {
     messages: storeMessages,
     pendingApproval,
+    todos,
+    errorByThread,
     setTodos,
     setWorkspaceFiles,
     setWorkspacePath,
@@ -67,8 +76,14 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
     setPendingApproval,
     appendMessage,
     loadThreads,
-    generateTitleForFirstMessage
+    generateTitleForFirstMessage,
+    setLoadingThreadId,
+    setThreadError,
+    clearThreadError
   } = useAppStore()
+
+  // Get error for current thread
+  const threadError = errorByThread[threadId] || null
 
   // Create transport instance (memoized to avoid recreating)
   const transport = useMemo(() => new ElectronIPCTransport(), [])
@@ -81,6 +96,7 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
         case 'message':
           if (data.message) {
             const msg = data.message
+            const isTool = msg.role === 'tool' || msg.type === 'tool'
             const storeMsg: Message = {
               id: msg.id || crypto.randomUUID(),
               role:
@@ -88,11 +104,14 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
                   ? 'user'
                   : msg.role === 'assistant' || msg.type === 'ai'
                     ? 'assistant'
-                    : msg.role === 'tool' || msg.type === 'tool'
+                    : isTool
                       ? 'tool'
                       : 'system',
               content: msg.content || '',
               tool_calls: msg.tool_calls as Message['tool_calls'],
+              // Include tool_call_id and name for tool messages
+              ...(isTool && msg.tool_call_id && { tool_call_id: msg.tool_call_id }),
+              ...(isTool && msg.name && { name: msg.name }),
               created_at: msg.created_at ? new Date(msg.created_at) : new Date()
             }
             console.log('[ChatContainer] Adding message:', storeMsg)
@@ -101,13 +120,18 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
           break
         case 'workspace':
           if (Array.isArray(data.files)) {
-            setWorkspaceFiles(
-              data.files.map((f) => ({
-                path: f.path,
-                is_dir: f.is_dir,
-                size: f.size
-              }))
-            )
+            // Merge incoming files with existing files (keyed by path)
+            setWorkspaceFiles((prevFiles) => {
+              const fileMap = new Map(prevFiles.map((f) => [f.path, f]))
+              for (const f of data.files!) {
+                fileMap.set(f.path, {
+                  path: f.path,
+                  is_dir: f.is_dir,
+                  size: f.size
+                })
+              }
+              return Array.from(fileMap.values())
+            })
           }
           if (data.path) {
             setWorkspacePath(data.path)
@@ -147,23 +171,57 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
     },
     onError: (error): void => {
       console.error('[ChatContainer] Stream error:', error)
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      setThreadError(threadId, errorMessage)
     }
   })
 
   // Sync todos from stream state
-  const agentValues = stream.values as unknown as InferAgentState<DeepAgent>
+  const agentValues = stream.values as AgentStreamValues | undefined
+  const streamTodos = agentValues?.todos
   useEffect(() => {
-    const todos = agentValues.todos
-    if (Array.isArray(todos)) {
+    if (Array.isArray(streamTodos)) {
       setTodos(
-        todos.map((t: { id?: string; content?: string; status?: string }) => ({
+        streamTodos.map((t) => ({
           id: t.id || crypto.randomUUID(),
           content: t.content || '',
           status: (t.status || 'pending') as 'pending' | 'in_progress' | 'completed' | 'cancelled'
         }))
       )
     }
-  }, [agentValues.todos, setTodos])
+  }, [streamTodos, setTodos])
+
+  // Sync loading state to store for sidebar indicator
+  useEffect(() => {
+    setLoadingThreadId(stream.isLoading ? threadId : null)
+    return () => {
+      // Clean up on unmount
+      setLoadingThreadId(null)
+    }
+  }, [stream.isLoading, threadId, setLoadingThreadId])
+
+  // Track the last seen error to detect when a NEW error occurs
+  // This prevents stale errors from being synced when switching threads
+  const lastErrorRef = useRef<unknown>(null)
+
+  // Sync stream error state to store (in case useStream exposes error directly)
+  useEffect(() => {
+    // Only sync if this is a genuinely new error (not a stale one from thread switch)
+    const isNewError = stream.error && stream.error !== lastErrorRef.current
+
+    if (isNewError) {
+      // This is a new error - record it and sync to the current thread
+      lastErrorRef.current = stream.error
+      const errorMessage =
+        stream.error instanceof Error ? stream.error.message : String(stream.error)
+      setThreadError(threadId, errorMessage)
+    } else if (!stream.error) {
+      // Error cleared - reset tracking
+      lastErrorRef.current = null
+    }
+    // Note: If stream.error exists but equals lastErrorRef (stale error after thread switch),
+    // we intentionally don't sync it to the new thread
+  }, [stream.error, threadId, setThreadError])
 
   // Persist messages and refresh threads when stream completes
   const prevLoadingRef = useRef(false)
@@ -173,10 +231,28 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
       const streamMsgs = stream.messages || []
       for (const msg of streamMsgs) {
         if (msg.id) {
+          const streamMsg = msg as {
+            id: string
+            type?: string
+            content?: string | unknown[]
+            tool_calls?: Message['tool_calls']
+            tool_call_id?: string
+            name?: string
+          }
+
+          let role: Message['role'] = 'assistant'
+          if (streamMsg.type === 'human') role = 'user'
+          else if (streamMsg.type === 'tool') role = 'tool'
+          else if (streamMsg.type === 'ai') role = 'assistant'
+
           const storeMsg: Message = {
-            id: msg.id,
-            role: (msg.type === 'human' ? 'user' : 'assistant') as Message['role'],
-            content: typeof msg.content === 'string' ? msg.content : '',
+            id: streamMsg.id,
+            role,
+            content: typeof streamMsg.content === 'string' ? streamMsg.content : '',
+            tool_calls: streamMsg.tool_calls,
+            // Include tool_call_id and name for tool messages
+            ...(role === 'tool' && streamMsg.tool_call_id && { tool_call_id: streamMsg.tool_call_id }),
+            ...(role === 'tool' && streamMsg.name && { name: streamMsg.name }),
             created_at: new Date()
           }
           appendMessage(storeMsg)
@@ -195,15 +271,50 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
     // Get streaming messages that aren't in the store yet
     const streamingMsgs: Message[] = (stream.messages || [])
       .filter((m): m is typeof m & { id: string } => !!m.id && !storeMessageIds.has(m.id))
-      .map((m) => ({
-        id: m.id,
-        role: (m.type === 'human' ? 'user' : 'assistant') as Message['role'],
-        content: typeof m.content === 'string' ? m.content : '',
-        created_at: new Date()
-      }))
+      .map((m) => {
+        // Determine role from message type
+        const streamMsg = m as {
+          id: string
+          type?: string
+          content?: string | unknown[]
+          tool_calls?: Message['tool_calls']
+          tool_call_id?: string
+          name?: string
+        }
+
+        let role: Message['role'] = 'assistant'
+        if (streamMsg.type === 'human') role = 'user'
+        else if (streamMsg.type === 'tool') role = 'tool'
+        else if (streamMsg.type === 'ai') role = 'assistant'
+
+        return {
+          id: streamMsg.id,
+          role,
+          content: typeof streamMsg.content === 'string' ? streamMsg.content : '',
+          tool_calls: streamMsg.tool_calls,
+          // Include tool_call_id and name for tool messages
+          ...(role === 'tool' && streamMsg.tool_call_id && { tool_call_id: streamMsg.tool_call_id }),
+          ...(role === 'tool' && streamMsg.name && { name: streamMsg.name }),
+          created_at: new Date()
+        }
+      })
 
     return [...storeMessages, ...streamingMsgs]
   }, [storeMessages, stream.messages])
+
+  // Build tool results map from tool messages
+  const toolResults = useMemo(() => {
+    const results = new Map<string, { content: string | unknown; is_error?: boolean }>()
+    for (const msg of displayMessages) {
+      if (msg.role === 'tool' && msg.tool_call_id) {
+        results.set(msg.tool_call_id, {
+          content: msg.content,
+          is_error: false // Could be enhanced to track errors
+        })
+      }
+    }
+    return results
+  }, [displayMessages])
 
   // Get the actual scrollable viewport element from Radix ScrollArea
   const getViewport = useCallback(() => {
@@ -254,9 +365,18 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
     inputRef.current?.focus()
   }, [threadId])
 
+  const handleDismissError = (): void => {
+    clearThreadError(threadId)
+  }
+
   const handleSubmit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault()
     if (!input.trim() || stream.isLoading) return
+
+    // Clear any previous error when submitting a new message
+    if (threadError) {
+      clearThreadError(threadId)
+    }
 
     const message = input.trim()
     setInput('')
@@ -329,14 +449,40 @@ export function ChatContainer({ threadId }: ChatContainerProps): React.JSX.Eleme
             )}
 
             {displayMessages.map((message) => (
-              <MessageBubble key={message.id} message={message} />
+              <MessageBubble key={message.id} message={message} toolResults={toolResults} />
             ))}
 
-            {/* Streaming indicator - only show if no streaming messages yet */}
+            {/* Streaming indicator and inline TODOs */}
             {stream.isLoading && (
-              <div className="flex items-center gap-2 text-muted-foreground text-sm">
-                <Loader2 className="size-4 animate-spin" />
-                Agent is thinking...
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 text-muted-foreground text-sm">
+                  <Loader2 className="size-4 animate-spin" />
+                  Agent is thinking...
+                </div>
+                {todos.length > 0 && <ChatTodos todos={todos} />}
+              </div>
+            )}
+
+            {/* Error state */}
+            {threadError && !stream.isLoading && (
+              <div className="flex items-start gap-3 rounded-md border border-destructive/50 bg-destructive/10 p-4">
+                <AlertCircle className="size-5 text-destructive shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium text-destructive text-sm">Agent Error</div>
+                  <div className="text-sm text-muted-foreground mt-1 break-words">
+                    {threadError}
+                  </div>
+                  <div className="text-xs text-muted-foreground mt-2">
+                    You can try sending a new message to continue the conversation.
+                  </div>
+                </div>
+                <button
+                  onClick={handleDismissError}
+                  className="shrink-0 rounded p-1 hover:bg-destructive/20 transition-colors"
+                  aria-label="Dismiss error"
+                >
+                  <X className="size-4 text-muted-foreground" />
+                </button>
               </div>
             )}
           </div>

@@ -237,7 +237,7 @@ function CommandDisplay({ command, output }: { command: string; output?: string 
 }
 
 // Subagent task display
-function TaskDisplay({ args }: { args: Record<string, unknown> }) {
+function TaskDisplay({ args, isExpanded }: { args: Record<string, unknown>; isExpanded?: boolean }) {
   const name = args.name as string | undefined
   const description = args.description as string | undefined
 
@@ -246,11 +246,16 @@ function TaskDisplay({ args }: { args: Record<string, unknown> }) {
       {name && (
         <div className="flex items-center gap-2">
           <GitBranch className="size-3 text-status-info" />
-          <span className="font-medium">{name}</span>
+          <span className="font-medium truncate">{name}</span>
         </div>
       )}
       {description && (
-        <p className="text-muted-foreground pl-5">{description}</p>
+        <p className={cn(
+          "text-muted-foreground pl-5",
+          !isExpanded && "line-clamp-2"
+        )}>
+          {description}
+        </p>
       )}
     </div>
   )
@@ -291,7 +296,7 @@ export function ToolCallRenderer({ toolCall, result, isError }: ToolCallRenderer
       }
 
       case 'task': {
-        return <TaskDisplay args={args} />
+        return <TaskDisplay args={args} isExpanded={isExpanded} />
       }
 
       case 'edit_file':
@@ -312,42 +317,169 @@ export function ToolCallRenderer({ toolCall, result, isError }: ToolCallRenderer
 
   // Render result based on tool type
   const renderFormattedResult = () => {
-    if (result === undefined || isError) return null
+    if (result === undefined) return null
+
+    // Handle errors
+    if (isError) {
+      return (
+        <div className="text-xs text-status-critical flex items-start gap-1.5">
+          <XCircle className="size-3 mt-0.5 shrink-0" />
+          <span className="break-words">{typeof result === 'string' ? result : JSON.stringify(result)}</span>
+        </div>
+      )
+    }
 
     switch (toolCall.name) {
       case 'read_file': {
         const content = typeof result === 'string' ? result : JSON.stringify(result)
-        const path = (toolCall.args.path || toolCall.args.file_path) as string
-        return <FileContentPreview content={content} path={path} />
+        const lines = content.split('\n').length
+        return (
+          <div className="space-y-2">
+            <div className="text-xs text-status-nominal flex items-center gap-1.5">
+              <CheckCircle2 className="size-3" />
+              <span>Read {lines} lines</span>
+            </div>
+            <FileContentPreview content={content} />
+          </div>
+        )
       }
 
       case 'ls': {
         if (Array.isArray(result)) {
-          return <FileListDisplay files={result} />
+          const dirs = result.filter((f: { is_dir?: boolean } | string) => typeof f === 'object' && f.is_dir).length
+          const files = result.length - dirs
+          return (
+            <div className="space-y-2">
+              <div className="text-xs text-status-nominal flex items-center gap-1.5">
+                <CheckCircle2 className="size-3" />
+                <span>{files} file{files !== 1 ? 's' : ''}{dirs > 0 ? `, ${dirs} folder${dirs !== 1 ? 's' : ''}` : ''}</span>
+              </div>
+              <FileListDisplay files={result} />
+            </div>
+          )
         }
         return null
       }
 
       case 'glob': {
         if (Array.isArray(result)) {
-          return <FileListDisplay files={result} isGlob />
+          return (
+            <div className="space-y-2">
+              <div className="text-xs text-status-nominal flex items-center gap-1.5">
+                <CheckCircle2 className="size-3" />
+                <span>Found {result.length} match{result.length !== 1 ? 'es' : ''}</span>
+              </div>
+              <FileListDisplay files={result} isGlob />
+            </div>
+          )
         }
         return null
       }
 
       case 'grep': {
         if (Array.isArray(result)) {
-          return <GrepResultsDisplay matches={result} />
+          const fileCount = new Set(result.map((m: { path: string }) => m.path)).size
+          return (
+            <div className="space-y-2">
+              <div className="text-xs text-status-nominal flex items-center gap-1.5">
+                <CheckCircle2 className="size-3" />
+                <span>{result.length} match{result.length !== 1 ? 'es' : ''} in {fileCount} file{fileCount !== 1 ? 's' : ''}</span>
+              </div>
+              <GrepResultsDisplay matches={result} />
+            </div>
+          )
         }
         return null
+      }
+
+      case 'execute': {
+        const output = typeof result === 'string' ? result : JSON.stringify(result)
+        if (output.trim()) {
+          return (
+            <div className="space-y-2">
+              <div className="text-xs text-status-nominal flex items-center gap-1.5">
+                <CheckCircle2 className="size-3" />
+                <span>Command completed</span>
+              </div>
+              <pre className="text-xs font-mono bg-background rounded-sm p-2 overflow-auto max-h-32 text-muted-foreground whitespace-pre-wrap break-all">
+                {output.slice(0, 1000)}
+                {output.length > 1000 && '...'}
+              </pre>
+            </div>
+          )
+        }
+        return (
+          <div className="text-xs text-status-nominal flex items-center gap-1.5">
+            <CheckCircle2 className="size-3" />
+            <span>Command completed (no output)</span>
+          </div>
+        )
       }
 
       case 'write_todos':
         // Already shown in Tasks panel
         return null
 
-      default:
-        return null
+      case 'write_file':
+      case 'edit_file': {
+        // Show confirmation message for file operations
+        if (typeof result === 'string' && result.trim()) {
+          return (
+            <div className="text-xs text-status-nominal flex items-center gap-1.5">
+              <CheckCircle2 className="size-3" />
+              <span>{result}</span>
+            </div>
+          )
+        }
+        return (
+          <div className="text-xs text-status-nominal flex items-center gap-1.5">
+            <CheckCircle2 className="size-3" />
+            <span>File saved</span>
+          </div>
+        )
+      }
+
+      case 'task': {
+        // Subagent task completion
+        if (typeof result === 'string' && result.trim()) {
+          return (
+            <div className="space-y-2">
+              <div className="text-xs text-status-nominal flex items-center gap-1.5">
+                <CheckCircle2 className="size-3" />
+                <span>Task completed</span>
+              </div>
+              <div className="text-xs text-muted-foreground pl-5 line-clamp-3">
+                {result.slice(0, 500)}
+                {result.length > 500 && '...'}
+              </div>
+            </div>
+          )
+        }
+        return (
+          <div className="text-xs text-status-nominal flex items-center gap-1.5">
+            <CheckCircle2 className="size-3" />
+            <span>Task completed</span>
+          </div>
+        )
+      }
+
+      default: {
+        // Generic success for unknown tools
+        if (typeof result === 'string' && result.trim()) {
+          return (
+            <div className="text-xs text-status-nominal flex items-center gap-1.5">
+              <CheckCircle2 className="size-3" />
+              <span className="truncate">{result.slice(0, 100)}{result.length > 100 ? '...' : ''}</span>
+            </div>
+          )
+        }
+        return (
+          <div className="text-xs text-status-nominal flex items-center gap-1.5">
+            <CheckCircle2 className="size-3" />
+            <span>Completed</span>
+          </div>
+        )
+      }
     }
   }
 

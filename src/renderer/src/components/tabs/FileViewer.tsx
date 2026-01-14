@@ -90,6 +90,13 @@ export function FileViewer({ filePath }: FileViewerProps) {
   const ext = fileName.includes('.') ? fileName.split('.').pop()?.toLowerCase() : undefined
   const language = useMemo(() => getLanguage(ext), [ext])
 
+  // Reset error state when filePath changes
+  useEffect(() => {
+    setError(null)
+    setHighlightedHtml(null)
+    setSource(null)
+  }, [filePath])
+
   // Load file content
   useEffect(() => {
     async function loadFile() {

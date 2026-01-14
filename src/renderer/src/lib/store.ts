@@ -16,6 +16,13 @@ export interface OpenFile {
   name: string
 }
 
+// Tab state per thread
+export interface TabState {
+  openFiles: OpenFile[]
+  activeTab: 'agent' | string
+  fileContents: Record<string, string>
+}
+
 interface AppState {
   // Threads
   threads: Thread[]
@@ -37,6 +44,12 @@ interface AppState {
   // Subagents (from agent)
   subagents: Subagent[]
 
+  // Loading state - which thread is currently streaming
+  loadingThreadId: string | null
+
+  // Error state - errors by thread ID
+  errorByThread: Record<string, string>
+
   // Models and Providers
   models: ModelConfig[]
   providers: Provider[]
@@ -55,6 +68,9 @@ interface AppState {
   openFiles: OpenFile[]
   activeTab: 'agent' | string // 'agent' or file path
   fileContents: Record<string, string> // path -> content cache
+
+  // Per-thread tab state persistence
+  tabStateByThread: Record<string, TabState>
 
   // Actions
   loadThreads: () => Promise<void>
@@ -79,11 +95,18 @@ interface AppState {
   setTodos: (todos: Todo[]) => void
 
   // Workspace actions
-  setWorkspaceFiles: (files: FileInfo[]) => void
+  setWorkspaceFiles: (files: FileInfo[] | ((prev: FileInfo[]) => FileInfo[])) => void
   setWorkspacePath: (path: string | null) => void
 
   // Subagent actions
   setSubagents: (subagents: Subagent[]) => void
+
+  // Loading state actions
+  setLoadingThreadId: (threadId: string | null) => void
+
+  // Error state actions
+  setThreadError: (threadId: string, error: string) => void
+  clearThreadError: (threadId: string) => void
 
   // Model actions
   loadModels: () => Promise<void>
@@ -119,6 +142,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   workspaceFiles: [],
   workspacePath: null,
   subagents: [],
+  loadingThreadId: null,
+  errorByThread: {},
   models: [],
   providers: [],
   currentModel: 'claude-sonnet-4-5-20250929',
@@ -128,6 +153,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   openFiles: [],
   activeTab: 'agent',
   fileContents: {},
+  tabStateByThread: {},
 
   // Thread actions
   loadThreads: async () => {
@@ -141,6 +167,22 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   createThread: async (metadata?: Record<string, unknown>) => {
+    const currentState = get()
+
+    // Save current thread's tab state before switching
+    let newTabStateByThread = currentState.tabStateByThread
+    if (currentState.currentThreadId) {
+      const currentTabState: TabState = {
+        openFiles: currentState.openFiles,
+        activeTab: currentState.activeTab,
+        fileContents: currentState.fileContents
+      }
+      newTabStateByThread = {
+        ...newTabStateByThread,
+        [currentState.currentThreadId]: currentTabState
+      }
+    }
+
     const thread = await window.api.threads.create(metadata)
     set((state) => ({
       threads: [thread, ...state.threads],
@@ -149,19 +191,53 @@ export const useAppStore = create<AppState>((set, get) => ({
       todos: [],
       workspaceFiles: [],
       workspacePath: null,
-      subagents: []
+      subagents: [],
+      // Reset tabs for new thread
+      openFiles: [],
+      activeTab: 'agent',
+      fileContents: {},
+      tabStateByThread: newTabStateByThread
     }))
     return thread
   },
 
   selectThread: async (threadId: string) => {
+    const currentState = get()
+
+    // Save current thread's tab state before switching
+    if (currentState.currentThreadId) {
+      const currentTabState: TabState = {
+        openFiles: currentState.openFiles,
+        activeTab: currentState.activeTab,
+        fileContents: currentState.fileContents
+      }
+      set((state) => ({
+        tabStateByThread: {
+          ...state.tabStateByThread,
+          [currentState.currentThreadId!]: currentTabState
+        }
+      }))
+    }
+
+    // Restore the new thread's tab state (or default to empty)
+    const savedTabState = currentState.tabStateByThread[threadId]
+    const newTabState = savedTabState || {
+      openFiles: [],
+      activeTab: 'agent',
+      fileContents: {}
+    }
+
     set({
       currentThreadId: threadId,
       messages: [],
       todos: [],
       workspaceFiles: [],
       workspacePath: null,
-      subagents: []
+      subagents: [],
+      // Restore tab state for this thread
+      openFiles: newTabState.openFiles,
+      activeTab: newTabState.activeTab,
+      fileContents: newTabState.fileContents
     })
 
     // Load workspace path from thread metadata
@@ -197,6 +273,8 @@ export const useAppStore = create<AppState>((set, get) => ({
                 type?: string
                 content?: string | unknown[]
                 tool_calls?: unknown[]
+                tool_call_id?: string
+                name?: string
               }>
               todos?: Array<{
                 id?: string
@@ -240,6 +318,9 @@ export const useAppStore = create<AppState>((set, get) => ({
               role,
               content,
               tool_calls: msg.tool_calls as Message['tool_calls'],
+              // Include tool_call_id and name for tool messages
+              ...(role === 'tool' && msg.tool_call_id && { tool_call_id: msg.tool_call_id }),
+              ...(role === 'tool' && msg.name && { name: msg.name }),
               created_at: new Date()
             }
           })
@@ -307,6 +388,12 @@ export const useAppStore = create<AppState>((set, get) => ({
           newCurrentId
         })
 
+        // Remove tab state for deleted thread
+        const { [threadId]: _, ...remainingTabState } = state.tabStateByThread
+
+        // If we're switching to a new thread, restore its tab state
+        const newThreadTabState = newCurrentId ? remainingTabState[newCurrentId] : null
+
         return {
           threads,
           currentThreadId: newCurrentId,
@@ -316,7 +403,12 @@ export const useAppStore = create<AppState>((set, get) => ({
           todos: wasCurrentThread ? [] : state.todos,
           workspaceFiles: wasCurrentThread ? [] : state.workspaceFiles,
           workspacePath: wasCurrentThread ? null : state.workspacePath,
-          subagents: wasCurrentThread ? [] : state.subagents
+          subagents: wasCurrentThread ? [] : state.subagents,
+          // Clean up tab state for deleted thread and restore new thread's tab state if switching
+          tabStateByThread: remainingTabState,
+          openFiles: wasCurrentThread ? (newThreadTabState?.openFiles || []) : state.openFiles,
+          activeTab: wasCurrentThread ? (newThreadTabState?.activeTab || 'agent') : state.activeTab,
+          fileContents: wasCurrentThread ? (newThreadTabState?.fileContents || {}) : state.fileContents
         }
       })
     } catch (error) {
@@ -384,8 +476,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   // Workspace actions
-  setWorkspaceFiles: (files: FileInfo[]) => {
-    set({ workspaceFiles: files })
+  setWorkspaceFiles: (files: FileInfo[] | ((prev: FileInfo[]) => FileInfo[])) => {
+    if (typeof files === 'function') {
+      set((state) => ({ workspaceFiles: files(state.workspaceFiles) }))
+    } else {
+      set({ workspaceFiles: files })
+    }
   },
 
   setWorkspacePath: (path: string | null) => {
@@ -395,6 +491,25 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Subagent actions
   setSubagents: (subagents: Subagent[]) => {
     set({ subagents })
+  },
+
+  // Loading state actions
+  setLoadingThreadId: (threadId: string | null) => {
+    set({ loadingThreadId: threadId })
+  },
+
+  // Error state actions
+  setThreadError: (threadId: string, error: string) => {
+    set((state) => ({
+      errorByThread: { ...state.errorByThread, [threadId]: error }
+    }))
+  },
+
+  clearThreadError: (threadId: string) => {
+    set((state) => {
+      const { [threadId]: _, ...rest } = state.errorByThread
+      return { errorByThread: rest }
+    })
   },
 
   // Model actions
